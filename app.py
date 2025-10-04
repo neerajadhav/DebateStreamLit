@@ -5,6 +5,8 @@ import json
 import time
 import os
 import glob
+import re
+import pandas as pd
 
 # Configure Gemini API
 def configure_gemini():
@@ -53,24 +55,26 @@ class DebateHost:
         
         Provide an unbiased analysis covering:
         
-        1. ARGUMENT STRENGTH (for each party):
-           - Logic and reasoning quality
-           - Evidence and support provided
-           - Clarity of communication
+        1. SCORING (Rate each party on these criteria from 0-10):
+           - Argument Strength: Logic, reasoning, and validity of claims
+           - Evidence Quality: Use of facts, data, examples, and sources
+           - Rebuttal Effectiveness: Addressing opponent's points
+           - Clarity & Delivery: Communication quality and structure
            
-        2. DEBATE TECHNIQUE (for each party):
-           - Addressing opponent's points
-           - Use of persuasive elements
-           - Structure and flow
+           Format your scores EXACTLY like this at the START of your response:
+           SCORES:
+           {party1_name}: Argument=X, Evidence=X, Rebuttal=X, Clarity=X
+           {party2_name}: Argument=X, Evidence=X, Rebuttal=X, Clarity=X
+           
+        2. DETAILED ANALYSIS (for each party):
+           - Strengths in this round
+           - Weaknesses or areas to improve
+           - Key points made
            
         3. ROUND ASSESSMENT:
            - Which argument was stronger this round and why
-           - Key points that stood out
-           - Areas for improvement for each party
-           
-        4. CURRENT STANDING:
-           - Brief assessment of overall debate progress
-           - No final winner declaration (debate continues)
+           - Critical moments or turning points
+           - Impact on overall debate trajectory
         
         Be fair, constructive, and specific in your feedback.
         """
@@ -81,31 +85,38 @@ class DebateHost:
         except Exception as e:
             return f"Error analyzing arguments: {str(e)}"
     
-    def generate_final_verdict(self, debate_history, topic):
+    def generate_final_verdict(self, debate_history, topic, party1_total_score, party2_total_score):
         prompt = f"""
         You are an impartial AI judge concluding a debate on: "{topic}"
         
         Here is the complete debate history:
         {json.dumps(debate_history, indent=2)}
         
+        FINAL SCORES:
+        Party 1 Total: {party1_total_score} points
+        Party 2 Total: {party2_total_score} points
+        
         Provide a comprehensive final verdict that includes:
         
         1. OVERALL PERFORMANCE SUMMARY:
            - Strengths and weaknesses of each debater
            - Quality of arguments throughout the debate
+           - Score breakdown analysis
            
         2. KEY MOMENTS:
            - Most compelling arguments from each side
            - Critical turning points in the debate
+           - Best rounds for each debater
            
         3. FINAL JUDGMENT:
            - Which side presented the stronger overall case
-           - Reasoning for your decision
-           - Final score or assessment
+           - Reasoning for your decision based on scores and performance
+           - Margin of victory assessment
            
         4. CONSTRUCTIVE FEEDBACK:
            - Areas for improvement for both parties
            - Positive highlights from the debate
+           - Lessons learned
         
         Be thorough, fair, and provide educational value in your analysis.
         """
@@ -135,6 +146,64 @@ def initialize_session_state():
         st.session_state.max_rounds = 3
     if 'debate_finished' not in st.session_state:
         st.session_state.debate_finished = False
+    # Scoring system
+    if 'party1_total_score' not in st.session_state:
+        st.session_state.party1_total_score = 0
+    if 'party2_total_score' not in st.session_state:
+        st.session_state.party2_total_score = 0
+    if 'party1_round_scores' not in st.session_state:
+        st.session_state.party1_round_scores = []
+    if 'party2_round_scores' not in st.session_state:
+        st.session_state.party2_round_scores = []
+
+def parse_scores_from_analysis(analysis_text, party1_name, party2_name):
+    """Extract scores from AI analysis text"""
+    
+    scores = {
+        'party1': {'argument': 0, 'evidence': 0, 'rebuttal': 0, 'clarity': 0, 'total': 0},
+        'party2': {'argument': 0, 'evidence': 0, 'rebuttal': 0, 'clarity': 0, 'total': 0}
+    }
+    
+    try:
+        # Look for SCORES: section
+        if "SCORES:" in analysis_text:
+            scores_section = analysis_text.split("SCORES:")[1].split("\n\n")[0]
+            
+            # Parse party1 scores
+            party1_pattern = rf"{re.escape(party1_name)}[:\s]+Argument[=\s]+(\d+).*?Evidence[=\s]+(\d+).*?Rebuttal[=\s]+(\d+).*?Clarity[=\s]+(\d+)"
+            party1_match = re.search(party1_pattern, scores_section, re.IGNORECASE | re.DOTALL)
+            
+            if party1_match:
+                scores['party1']['argument'] = int(party1_match.group(1))
+                scores['party1']['evidence'] = int(party1_match.group(2))
+                scores['party1']['rebuttal'] = int(party1_match.group(3))
+                scores['party1']['clarity'] = int(party1_match.group(4))
+                scores['party1']['total'] = sum([
+                    scores['party1']['argument'],
+                    scores['party1']['evidence'],
+                    scores['party1']['rebuttal'],
+                    scores['party1']['clarity']
+                ])
+            
+            # Parse party2 scores
+            party2_pattern = rf"{re.escape(party2_name)}[:\s]+Argument[=\s]+(\d+).*?Evidence[=\s]+(\d+).*?Rebuttal[=\s]+(\d+).*?Clarity[=\s]+(\d+)"
+            party2_match = re.search(party2_pattern, scores_section, re.IGNORECASE | re.DOTALL)
+            
+            if party2_match:
+                scores['party2']['argument'] = int(party2_match.group(1))
+                scores['party2']['evidence'] = int(party2_match.group(2))
+                scores['party2']['rebuttal'] = int(party2_match.group(3))
+                scores['party2']['clarity'] = int(party2_match.group(4))
+                scores['party2']['total'] = sum([
+                    scores['party2']['argument'],
+                    scores['party2']['evidence'],
+                    scores['party2']['rebuttal'],
+                    scores['party2']['clarity']
+                ])
+    except Exception as e:
+        st.warning(f"Could not parse scores automatically. Using default values. Error: {str(e)}")
+    
+    return scores
 
 def main():
     st.set_page_config(
@@ -218,6 +287,12 @@ def run_records_tab():
                     st.write(f"**Participants:** {', '.join(debate_data.get('participants', []))}")
                     st.write(f"**Rounds:** {debate_data.get('rounds', 'N/A')}")
                     
+                    # Display final scores if available
+                    if 'final_scores' in debate_data:
+                        st.write("**Final Scores:**")
+                        for participant, score in debate_data['final_scores'].items():
+                            st.write(f"  • {participant}: {score} points")
+                    
                     # Format timestamp if available
                     if 'timestamp' in debate_data:
                         try:
@@ -243,6 +318,21 @@ def run_records_tab():
                     for round_data in debate_data['history']:
                         round_num = round_data.get('round', 'Unknown')
                         with st.expander(f"Round {round_num}", expanded=False):
+                            # Display scores if available
+                            if 'scores' in round_data:
+                                score_col1, score_col2 = st.columns(2)
+                                with score_col1:
+                                    party1_scores = round_data['scores']['party1']
+                                    st.markdown(f"**{round_data.get('party1_name', 'Party 1')} - Score: {party1_scores['total']}/40**")
+                                    st.caption(f"Arg: {party1_scores['argument']} | Ev: {party1_scores['evidence']} | Reb: {party1_scores['rebuttal']} | Cl: {party1_scores['clarity']}")
+                                
+                                with score_col2:
+                                    party2_scores = round_data['scores']['party2']
+                                    st.markdown(f"**{round_data.get('party2_name', 'Party 2')} - Score: {party2_scores['total']}/40**")
+                                    st.caption(f"Arg: {party2_scores['argument']} | Ev: {party2_scores['evidence']} | Reb: {party2_scores['rebuttal']} | Cl: {party2_scores['clarity']}")
+                                
+                                st.divider()
+                            
                             col1, col2 = st.columns(2)
                             with col1:
                                 st.markdown(f"**{round_data.get('party1_name', 'Party 1')}:**")
@@ -339,7 +429,7 @@ def run_debate():
         st.info(st.session_state.opening_statement)
         st.divider()
     
-    # Display current debate info
+    # Display current debate info and scores
     col1, col2, col3 = st.columns(3)
     with col1:
         st.metric("Topic", st.session_state.debate_topic)
@@ -349,11 +439,98 @@ def run_debate():
         progress = st.session_state.current_round / st.session_state.max_rounds
         st.metric("Progress", f"{progress:.0%}")
     
+    # Display live scoreboard
+    st.header("📊 Live Scoreboard")
+    score_col1, score_col2, score_col3 = st.columns([2, 2, 1])
+    
+    with score_col1:
+        st.subheader(f"🔵 {st.session_state.party1_name}")
+        st.metric("Total Score", f"{st.session_state.party1_total_score} pts", 
+                  delta=st.session_state.party1_round_scores[-1]['total'] if st.session_state.party1_round_scores else None)
+        
+        if st.session_state.party1_round_scores:
+            latest = st.session_state.party1_round_scores[-1]
+            cols = st.columns(4)
+            cols[0].metric("Argument", latest['argument'], delta_color="off")
+            cols[1].metric("Evidence", latest['evidence'], delta_color="off")
+            cols[2].metric("Rebuttal", latest['rebuttal'], delta_color="off")
+            cols[3].metric("Clarity", latest['clarity'], delta_color="off")
+    
+    with score_col2:
+        st.subheader(f"🔴 {st.session_state.party2_name}")
+        st.metric("Total Score", f"{st.session_state.party2_total_score} pts",
+                  delta=st.session_state.party2_round_scores[-1]['total'] if st.session_state.party2_round_scores else None)
+        
+        if st.session_state.party2_round_scores:
+            latest = st.session_state.party2_round_scores[-1]
+            cols = st.columns(4)
+            cols[0].metric("Argument", latest['argument'], delta_color="off")
+            cols[1].metric("Evidence", latest['evidence'], delta_color="off")
+            cols[2].metric("Rebuttal", latest['rebuttal'], delta_color="off")
+            cols[3].metric("Clarity", latest['clarity'], delta_color="off")
+    
+    with score_col3:
+        st.subheader("Lead")
+        score_diff = st.session_state.party1_total_score - st.session_state.party2_total_score
+        if score_diff > 0:
+            st.success(f"🔵 +{score_diff}")
+        elif score_diff < 0:
+            st.error(f"🔴 +{abs(score_diff)}")
+        else:
+            st.info("Tied")
+    
+    # Score progression chart
+    if len(st.session_state.party1_round_scores) > 0:
+        st.subheader("📈 Score Progression")
+        
+        rounds = list(range(1, len(st.session_state.party1_round_scores) + 1))
+        party1_cumulative = []
+        party2_cumulative = []
+        
+        cumulative1 = 0
+        cumulative2 = 0
+        for i in range(len(st.session_state.party1_round_scores)):
+            cumulative1 += st.session_state.party1_round_scores[i]['total']
+            cumulative2 += st.session_state.party2_round_scores[i]['total']
+            party1_cumulative.append(cumulative1)
+            party2_cumulative.append(cumulative2)
+        
+        chart_data = pd.DataFrame({
+            'Round': rounds,
+            st.session_state.party1_name: party1_cumulative,
+            st.session_state.party2_name: party2_cumulative
+        })
+        
+        st.line_chart(chart_data.set_index('Round'))
+    
+    st.divider()
+    
     # Show debate history
     if st.session_state.debate_history:
         st.header("📚 Debate History")
         for i, round_data in enumerate(st.session_state.debate_history, 1):
-            with st.expander(f"Round {i} - Analysis", expanded=(i == len(st.session_state.debate_history))):
+            with st.expander(f"Round {i} - Analysis & Scores", expanded=(i == len(st.session_state.debate_history))):
+                # Show scores for this round
+                if 'scores' in round_data:
+                    score_col1, score_col2 = st.columns(2)
+                    with score_col1:
+                        st.markdown(f"**🔵 {round_data['party1_name']} - Round Score: {round_data['scores']['party1']['total']}/40**")
+                        score_details = f"Argument: {round_data['scores']['party1']['argument']}/10 | "
+                        score_details += f"Evidence: {round_data['scores']['party1']['evidence']}/10 | "
+                        score_details += f"Rebuttal: {round_data['scores']['party1']['rebuttal']}/10 | "
+                        score_details += f"Clarity: {round_data['scores']['party1']['clarity']}/10"
+                        st.caption(score_details)
+                    
+                    with score_col2:
+                        st.markdown(f"**🔴 {round_data['party2_name']} - Round Score: {round_data['scores']['party2']['total']}/40**")
+                        score_details = f"Argument: {round_data['scores']['party2']['argument']}/10 | "
+                        score_details += f"Evidence: {round_data['scores']['party2']['evidence']}/10 | "
+                        score_details += f"Rebuttal: {round_data['scores']['party2']['rebuttal']}/10 | "
+                        score_details += f"Clarity: {round_data['scores']['party2']['clarity']}/10"
+                        st.caption(score_details)
+                    
+                    st.divider()
+                
                 col1, col2 = st.columns(2)
                 with col1:
                     st.markdown(f"**{round_data['party1_name']}:**")
@@ -403,6 +580,19 @@ def run_debate():
                             st.session_state.debate_topic
                         )
                         
+                        # Parse scores from analysis
+                        scores = parse_scores_from_analysis(
+                            analysis,
+                            st.session_state.party1_name,
+                            st.session_state.party2_name
+                        )
+                        
+                        # Update scores
+                        st.session_state.party1_round_scores.append(scores['party1'])
+                        st.session_state.party2_round_scores.append(scores['party2'])
+                        st.session_state.party1_total_score += scores['party1']['total']
+                        st.session_state.party2_total_score += scores['party2']['total']
+                        
                         # Store round data
                         round_data = {
                             'round': st.session_state.current_round,
@@ -411,6 +601,7 @@ def run_debate():
                             'party2_name': st.session_state.party2_name,
                             'party2_argument': party2_argument,
                             'analysis': analysis,
+                            'scores': scores,
                             'timestamp': datetime.now().isoformat()
                         }
                         
@@ -436,11 +627,38 @@ def run_debate():
     if st.session_state.debate_finished:
         st.header("🏆 Final Verdict")
         
-        if st.button("📋 Generate Final Analysis", type="primary"):
+        # Display final scores prominently
+        st.subheader("🎯 Final Scores")
+        final_col1, final_col2, final_col3 = st.columns([2, 2, 1])
+        
+        with final_col1:
+            st.metric(f"🔵 {st.session_state.party1_name}", 
+                     f"{st.session_state.party1_total_score} points",
+                     delta=None)
+        
+        with final_col2:
+            st.metric(f"� {st.session_state.party2_name}", 
+                     f"{st.session_state.party2_total_score} points",
+                     delta=None)
+        
+        with final_col3:
+            score_diff = abs(st.session_state.party1_total_score - st.session_state.party2_total_score)
+            if st.session_state.party1_total_score > st.session_state.party2_total_score:
+                st.success(f"🔵 Wins\nby {score_diff}")
+            elif st.session_state.party2_total_score > st.session_state.party1_total_score:
+                st.error(f"🔴 Wins\nby {score_diff}")
+            else:
+                st.info("Tie!")
+        
+        st.divider()
+        
+        if st.button("�📋 Generate Final Analysis", type="primary"):
             with st.spinner("AI Judge preparing final verdict..."):
                 final_verdict = host.generate_final_verdict(
                     st.session_state.debate_history,
-                    st.session_state.debate_topic
+                    st.session_state.debate_topic,
+                    st.session_state.party1_total_score,
+                    st.session_state.party2_total_score
                 )
                 
                 st.success("**🎯 Final Analysis Complete!**")
@@ -451,6 +669,14 @@ def run_debate():
                     'topic': st.session_state.debate_topic,
                     'participants': [st.session_state.party1_name, st.session_state.party2_name],
                     'rounds': len(st.session_state.debate_history),
+                    'final_scores': {
+                        st.session_state.party1_name: st.session_state.party1_total_score,
+                        st.session_state.party2_name: st.session_state.party2_total_score
+                    },
+                    'round_scores': {
+                        st.session_state.party1_name: st.session_state.party1_round_scores,
+                        st.session_state.party2_name: st.session_state.party2_round_scores
+                    },
                     'history': st.session_state.debate_history,
                     'final_verdict': final_verdict,
                     'timestamp': datetime.now().isoformat()
