@@ -3,6 +3,8 @@ import google.generativeai as genai
 from datetime import datetime
 import json
 import time
+import os
+import glob
 
 # Configure Gemini API
 def configure_gemini():
@@ -147,6 +149,16 @@ def main():
     
     initialize_session_state()
     
+    # Create navigation tabs
+    tab1, tab2 = st.tabs(["🎯 Current Debate", "📚 Records"])
+    
+    with tab1:
+        run_debate_tab()
+    
+    with tab2:
+        run_records_tab()
+
+def run_debate_tab():
     # Sidebar for API configuration and controls
     with st.sidebar:
         st.header("⚙️ Configuration")
@@ -162,7 +174,8 @@ def main():
         st.header("🎮 Debate Controls")
         if st.button("🔄 Reset Debate"):
             for key in list(st.session_state.keys()):
-                del st.session_state[key]
+                if key.startswith('debate') or key in ['current_round', 'max_rounds', 'opening_statement', 'party1_name', 'party2_name']:
+                    del st.session_state[key]
             st.rerun()
     
     # Main application
@@ -170,6 +183,109 @@ def main():
         setup_debate()
     else:
         run_debate()
+
+def run_records_tab():
+    st.header("📚 Debate Records")
+    
+    # Ensure records directory exists
+    records_dir = "records"
+    if not os.path.exists(records_dir):
+        os.makedirs(records_dir)
+    
+    # Get all JSON files in records directory
+    json_files = glob.glob(os.path.join(records_dir, "*.json"))
+    json_files.sort(reverse=True)  # Most recent first
+    
+    if not json_files:
+        st.info("No debate records found. Complete a debate to see records here!")
+        return
+    
+    st.subheader(f"Found {len(json_files)} debate record(s)")
+    
+    # Display records
+    for file_path in json_files:
+        try:
+            with open(file_path, 'r') as f:
+                debate_data = json.load(f)
+            
+            filename = os.path.basename(file_path)
+            
+            with st.expander(f"📋 {debate_data.get('topic', 'Unknown Topic')} - {filename}"):
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    st.write(f"**Topic:** {debate_data.get('topic', 'N/A')}")
+                    st.write(f"**Participants:** {', '.join(debate_data.get('participants', []))}")
+                    st.write(f"**Rounds:** {debate_data.get('rounds', 'N/A')}")
+                    
+                    # Format timestamp if available
+                    if 'timestamp' in debate_data:
+                        try:
+                            dt = datetime.fromisoformat(debate_data['timestamp'])
+                            formatted_time = dt.strftime("%Y-%m-%d %H:%M:%S")
+                            st.write(f"**Date:** {formatted_time}")
+                        except:
+                            st.write(f"**Date:** {debate_data['timestamp']}")
+                
+                with col2:
+                    # Download button for individual record
+                    st.download_button(
+                        label="💾 Download JSON",
+                        data=json.dumps(debate_data, indent=2),
+                        file_name=filename,
+                        mime="application/json",
+                        key=f"download_{filename}"
+                    )
+                
+                # Show debate history
+                if 'history' in debate_data and debate_data['history']:
+                    st.subheader("🗣️ Debate Rounds")
+                    for round_data in debate_data['history']:
+                        round_num = round_data.get('round', 'Unknown')
+                        with st.expander(f"Round {round_num}", expanded=False):
+                            col1, col2 = st.columns(2)
+                            with col1:
+                                st.markdown(f"**{round_data.get('party1_name', 'Party 1')}:**")
+                                st.write(round_data.get('party1_argument', 'No argument recorded'))
+                            with col2:
+                                st.markdown(f"**{round_data.get('party2_name', 'Party 2')}:**")
+                                st.write(round_data.get('party2_argument', 'No argument recorded'))
+                            
+                            if 'analysis' in round_data:
+                                st.markdown("**🤖 AI Analysis:**")
+                                st.write(round_data['analysis'])
+                
+                # Show final verdict
+                if 'final_verdict' in debate_data:
+                    with st.expander("🏆 Final Verdict", expanded=False):
+                        st.write(debate_data['final_verdict'])
+                
+                st.divider()
+        
+        except Exception as e:
+            st.error(f"Error loading {filename}: {str(e)}")
+
+def save_debate_to_records(debate_data):
+    """Save debate data to records directory as JSON file"""
+    try:
+        # Ensure records directory exists
+        records_dir = "records"
+        if not os.path.exists(records_dir):
+            os.makedirs(records_dir)
+        
+        # Generate filename with timestamp
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        filename = f"debate_{timestamp}.json"
+        filepath = os.path.join(records_dir, filename)
+        
+        # Save to file
+        with open(filepath, 'w') as f:
+            json.dump(debate_data, f, indent=2)
+        
+        return filepath
+    except Exception as e:
+        st.error(f"Error saving debate record: {str(e)}")
+        return None
 
 def setup_debate():
     st.header("🚀 Setup New Debate")
@@ -330,8 +446,7 @@ def run_debate():
                 st.success("**🎯 Final Analysis Complete!**")
                 st.write(final_verdict)
                 
-                # Option to export debate
-                st.subheader("📄 Export Debate")
+                # Prepare debate export data
                 debate_export = {
                     'topic': st.session_state.debate_topic,
                     'participants': [st.session_state.party1_name, st.session_state.party2_name],
@@ -341,6 +456,14 @@ def run_debate():
                     'timestamp': datetime.now().isoformat()
                 }
                 
+                # Automatically save to records directory
+                saved_path = save_debate_to_records(debate_export)
+                if saved_path:
+                    st.success(f"✅ Debate automatically saved to: `{saved_path}`")
+                    st.info("💡 You can view this and other saved debates in the **Records** tab!")
+                
+                # Option to download debate
+                st.subheader("📄 Export Options")
                 st.download_button(
                     label="💾 Download Debate Summary",
                     data=json.dumps(debate_export, indent=2),
